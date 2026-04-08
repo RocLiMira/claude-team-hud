@@ -68,13 +68,10 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // Initialize the filesystem watcher with a tokio runtime context.
-            // Tauri v2 provides a tokio runtime, but setup() runs synchronously
-            // on the main thread. We create the watcher inside a spawned task
-            // that has access to the tokio runtime, then store it in managed state.
-            let watcher = tokio::runtime::Handle::current().block_on(async {
-                watcher::TeamWatcher::new(handle)
-            });
+            // TeamWatcher::new() creates channels and a notify watcher synchronously,
+            // then spawns async tasks via tauri::async_runtime (not tokio::spawn)
+            // so it works in the setup() context.
+            let watcher = watcher::TeamWatcher::new(handle);
 
             app.manage(Arc::new(Mutex::new(watcher)) as WatcherState);
 

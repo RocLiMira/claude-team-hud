@@ -325,23 +325,49 @@ function buildMockSnapshot(cycleCount: number): TeamSnapshot {
 function initMock(): void {
   console.log("[bridge] Mock mode -- no Tauri context detected");
 
-  availableTeams.set(["mock-team"]);
-  activeTeam.set("mock-team");
-
-  let cycleCount = 0;
-
-  // Initial snapshot
-  applySnapshot(buildMockSnapshot(cycleCount));
-  cycleCount++;
-
-  // Cycle every 3 seconds
-  mockInterval = setInterval(() => {
-    applySnapshot(buildMockSnapshot(cycleCount));
-    cycleCount++;
-  }, 3000);
-
+  // Start with NO team -- empty office
   bridgeReady.set(true);
-  console.log("[bridge] Mock data cycling started (3s interval)");
+
+  // After 2 seconds, "discover" a team (simulates user running /init-team)
+  setTimeout(() => {
+    availableTeams.set(["mock-team"]);
+    activeTeam.set("mock-team");
+    console.log("[bridge] Mock: Team discovered!");
+
+    // Gradually spawn agents one by one, simulating real team creation
+    let spawnIndex = 0;
+    let cycleCount = 0;
+
+    const spawnNext = () => {
+      if (spawnIndex >= MOCK_AGENTS_ROLES.length) {
+        // All agents spawned, switch to normal cycling
+        console.log("[bridge] Mock: All agents spawned, cycling states");
+        mockInterval = setInterval(() => {
+          cycleCount++;
+          applySnapshot(buildMockSnapshot(cycleCount));
+        }, 3000);
+        return;
+      }
+
+      // Build snapshot with only the agents spawned so far
+      spawnIndex++;
+      const snapshot = buildMockSnapshot(cycleCount);
+      snapshot.agents = snapshot.agents.slice(0, spawnIndex);
+      snapshot.token_usage.per_agent = {};
+      for (const a of snapshot.agents) {
+        snapshot.token_usage.per_agent[a.name] = a.token_usage;
+      }
+      applySnapshot(snapshot);
+
+      // Next agent arrives after 2-3 seconds
+      setTimeout(spawnNext, 2000 + Math.random() * 1000);
+    };
+
+    // First agent (Team Lead) arrives after 1 second
+    setTimeout(spawnNext, 1000);
+  }, 2000);
+
+  console.log("[bridge] Mock mode ready -- team will appear in 2s");
 }
 
 // --- Public API --------------------------------------------------------------

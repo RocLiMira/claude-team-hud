@@ -47,7 +47,7 @@ impl TeamWatcher {
 
         // Start the debounce consumer task
         let handle_clone = app_handle.clone();
-        tokio::spawn(Self::debounce_loop(debounce_rx, handle_clone));
+        tauri::async_runtime::spawn(Self::debounce_loop(debounce_rx, handle_clone));
 
         // Create the notify watcher. The event callback sends team names into
         // the debounce channel.
@@ -214,7 +214,7 @@ impl TeamWatcher {
         // Start polling fallback: every 3 seconds, rebuild snapshot
         let poll_team = team_name.to_string();
         let poll_handle = self.app_handle.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(3));
             loop {
                 interval.tick().await;
