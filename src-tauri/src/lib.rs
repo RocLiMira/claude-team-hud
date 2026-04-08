@@ -1,4 +1,10 @@
 pub mod models;
+pub mod parser;
+pub mod watcher;
+
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
+use watcher::WatcherState;
 
 /// List available teams from ~/.claude/teams/
 #[tauri::command]
@@ -26,22 +32,60 @@ fn list_teams() -> Vec<String> {
 /// Get a snapshot of a team's current state
 #[tauri::command]
 fn get_team_snapshot(team: String) -> Result<models::TeamSnapshot, String> {
-    // TODO: Implement full parsing in parser.rs
-    Ok(models::TeamSnapshot {
-        team_name: team,
-        agents: vec![],
-        tasks: vec![],
-        messages: vec![],
-        token_usage: models::TokenUsage::default(),
-        session_start: None,
-    })
+    parser::build_team_snapshot(&team)
+}
+
+/// Start watching a team for filesystem changes.
+/// Registers FS watches and starts a polling fallback.
+#[tauri::command]
+fn watch_team(
+    team: String,
+    state: tauri::State<'_, WatcherState>,
+) -> Result<(), String> {
+    let mut watcher = state
+        .lock()
+        .map_err(|e| format!("Failed to acquire watcher lock: {}", e))?;
+    watcher.watch_team(&team)
+}
+
+/// Stop watching a team.
+#[tauri::command]
+fn stop_watching_team(
+    team: String,
+    state: tauri::State<'_, WatcherState>,
+) -> Result<(), String> {
+    let mut watcher = state
+        .lock()
+        .map_err(|e| format!("Failed to acquire watcher lock: {}", e))?;
+    watcher.stop_watching(&team);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![list_teams, get_team_snapshot])
+        .setup(|app| {
+            let handle = app.handle().clone();
+
+            // Initialize the filesystem watcher with a tokio runtime context.
+            // Tauri v2 provides a tokio runtime, but setup() runs synchronously
+            // on the main thread. We create the watcher inside a spawned task
+            // that has access to the tokio runtime, then store it in managed state.
+            let watcher = tokio::runtime::Handle::current().block_on(async {
+                watcher::TeamWatcher::new(handle)
+            });
+
+            app.manage(Arc::new(Mutex::new(watcher)) as WatcherState);
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_teams,
+            get_team_snapshot,
+            watch_team,
+            stop_watching_team
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
