@@ -1,116 +1,115 @@
 #!/usr/bin/env python3
 """
-Claude Team HUD — Permission Hook
-Receives permission requests from Claude Code, writes to temp file for HUD to pick up.
-Waits for HUD's response, then outputs the decision to Claude Code.
+Claude Team HUD — Permission Hook (PermissionRequest)
+
+Receives permission requests from Claude Code via the PermissionRequest hook event,
+forwards them to the HUD app via Unix domain socket, and waits for the user's decision.
+
+Only fires when Claude Code actually needs user approval (not for every tool call).
+Agents must NOT use --dangerously-skip-permissions for this hook to fire.
+
+Architecture:
+  Claude Code -> this script -> Unix socket -> HUD (Rust backend) -> Frontend UI
+                             <- user decision <- socket response <-
 """
 import json
 import os
+import socket
 import sys
-import time
 
-REQ_DIR = "/tmp/claude-hud-permissions"
+SOCKET_PATH = "/tmp/claude-hud.sock"
 TIMEOUT_SECONDS = 300  # 5 minutes
+
+
+def send_event(state):
+    """Send event to HUD via Unix socket, return response if permission request."""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(TIMEOUT_SECONDS)
+        sock.connect(SOCKET_PATH)
+        sock.sendall(json.dumps(state).encode())
+
+        # For permission requests, wait for response
+        if state.get("status") == "waiting_for_approval":
+            response = sock.recv(4096)
+            sock.close()
+            if response:
+                return json.loads(response.decode())
+        else:
+            sock.close()
+
+        return None
+    except (socket.error, OSError, json.JSONDecodeError):
+        return None
+
 
 def main():
     try:
         data = json.load(sys.stdin)
     except json.JSONDecodeError:
-        sys.exit(0)  # Let Claude Code handle it
+        sys.exit(0)
 
     event = data.get("hook_event_name", "")
+
+    # Only handle PermissionRequest events
     if event != "PermissionRequest":
         sys.exit(0)
 
-    # Build request info
     session_id = data.get("session_id", "unknown")
     tool_name = data.get("tool_name", "unknown")
     tool_input = data.get("tool_input", {})
 
-    # Create unique request file
-    os.makedirs(REQ_DIR, exist_ok=True)
-    req_id = f"{session_id}-{int(time.time() * 1000)}"
-    req_file = os.path.join(REQ_DIR, f"req-{req_id}.json")
-    resp_file = os.path.join(REQ_DIR, f"resp-{req_id}.json")
-
-    # Write request for HUD to read
-    request = {
-        "id": req_id,
-        "session_id": session_id,
-        "tool_name": tool_name,
-        "tool_input": tool_input,
-        "timestamp": time.time(),
-    }
-
-    # Add human-readable description
+    # Build human-readable description
     if tool_name == "Write":
-        request["description"] = f"Write to {tool_input.get('file_path', '?')}"
+        description = f"Write to {tool_input.get('file_path', '?')}"
     elif tool_name == "Edit":
-        request["description"] = f"Edit {tool_input.get('file_path', '?')}"
+        description = f"Edit {tool_input.get('file_path', '?')}"
     elif tool_name == "Bash":
         cmd = tool_input.get("command", "?")
-        request["description"] = f"Run: {cmd[:100]}"
+        description = f"Run: {cmd[:100]}"
     else:
-        request["description"] = f"Use tool: {tool_name}"
+        description = f"Use tool: {tool_name}"
 
-    with open(req_file, "w") as f:
-        json.dump(request, f)
+    # Send to HUD and wait for decision
+    state = {
+        "session_id": session_id,
+        "event": event,
+        "status": "waiting_for_approval",
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "description": description,
+        "pid": os.getppid(),
+    }
 
-    # Wait for HUD to respond
-    for _ in range(TIMEOUT_SECONDS):
-        if os.path.exists(resp_file):
-            try:
-                with open(resp_file) as f:
-                    response = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                time.sleep(0.5)
-                continue
+    response = send_event(state)
 
-            # Cleanup
-            try:
-                os.remove(req_file)
-                os.remove(resp_file)
-            except OSError:
-                pass
+    if response:
+        decision = response.get("decision", "ask")
 
-            decision = response.get("decision", "ask")
-
-            if decision == "allow":
-                output = {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PermissionRequest",
-                        "decision": {"behavior": "allow"},
-                    }
+        if decision == "allow":
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"behavior": "allow"},
                 }
-                print(json.dumps(output))
-                sys.exit(0)
-            elif decision == "deny":
-                output = {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PermissionRequest",
-                        "decision": {
-                            "behavior": "deny",
-                            "message": response.get("reason", "Denied via Claude Team HUD"),
-                        },
-                    }
+            }
+            print(json.dumps(output))
+            sys.exit(0)
+
+        elif decision == "deny":
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {
+                        "behavior": "deny",
+                        "message": response.get("reason", "Denied via Claude Team HUD"),
+                    },
                 }
-                print(json.dumps(output))
-                sys.exit(0)
-            else:
-                # "ask" — let Claude Code show native UI
-                try:
-                    os.remove(req_file)
-                except OSError:
-                    pass
-                sys.exit(0)
+            }
+            print(json.dumps(output))
+            sys.exit(0)
 
-        time.sleep(1)
-
-    # Timeout — cleanup and let Claude Code handle it
-    try:
-        os.remove(req_file)
-    except OSError:
-        pass
+    # No response or "ask" — let Claude Code show its native permission UI
     sys.exit(0)
 
 

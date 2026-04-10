@@ -29,6 +29,15 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 let mockInterval: ReturnType<typeof setInterval> | null = null;
 let teamDiscoveryInterval: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * Monotonically increasing epoch counter. Incremented on every team switch.
+ * Stale data from a previous switch is detected and discarded.
+ */
+let switchEpoch = 0;
+
+/** The team name that was active before the current switch (for stop_watching). */
+let previousTeam: string | null = null;
+
 // --- Tauri context detection -------------------------------------------------
 
 function isTauriContext(): boolean {
@@ -192,6 +201,8 @@ function startTeamDiscovery(invoke: (cmd: string, args?: Record<string, unknown>
 }
 
 async function switchTeamTauri(teamName: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+
   // Cleanup previous watchers
   if (unlisten) {
     unlisten();
@@ -202,17 +213,28 @@ async function switchTeamTauri(teamName: string): Promise<void> {
     pollInterval = null;
   }
 
-  activeTeam.set(teamName);
+  // Stop Rust-side watcher for the old team (cancels polling task)
+  if (previousTeam && previousTeam !== teamName) {
+    try {
+      await invoke("stop_watching_team", { team: previousTeam });
+    } catch { /* ignore if command unavailable */ }
+  }
 
-  const { invoke } = await import("@tauri-apps/api/core");
+  // Increment epoch — all stale callbacks from previous switch are invalidated
+  switchEpoch++;
+  const myEpoch = switchEpoch;
+
+  activeTeam.set(teamName);
+  previousTeam = teamName;
 
   // Try event-driven mode first (watch_team + team-update event).
-  // rust-dev is implementing this; graceful fallback to polling if not available yet.
   let eventDriven = false;
   try {
     await invoke("watch_team", { team: teamName });
     const { listen } = await import("@tauri-apps/api/event");
     unlisten = await listen<TeamSnapshot>("team-update", (event) => {
+      // Discard if this listener belongs to a stale switch epoch
+      if (myEpoch !== switchEpoch) return;
       // Only apply snapshots for the currently active team
       if (event.payload.team_name === get(activeTeam)) {
         applySnapshot(event.payload);
@@ -227,13 +249,13 @@ async function switchTeamTauri(teamName: string): Promise<void> {
   // If event-driven failed, poll get_team_snapshot every 2 seconds
   if (!eventDriven) {
     const poll = async () => {
-      // Only apply if this team is still the active one
-      if (get(activeTeam) !== teamName) return;
+      // Discard if epoch has changed (team was switched again)
+      if (myEpoch !== switchEpoch) return;
       try {
         const snapshot: TeamSnapshot = await invoke("get_team_snapshot", {
           team: teamName,
         });
-        if (get(activeTeam) === teamName) {
+        if (myEpoch === switchEpoch) {
           applySnapshot(snapshot);
         }
       } catch (err) {
@@ -474,7 +496,7 @@ export function clearStores(): void {
   meetingActive.set(false);
 }
 
-export function destroyBridge(): void {
+export async function destroyBridge(): Promise<void> {
   if (unlisten) {
     unlisten();
     unlisten = null;
@@ -491,5 +513,14 @@ export function destroyBridge(): void {
     clearInterval(teamDiscoveryInterval);
     teamDiscoveryInterval = null;
   }
+  // Stop Rust-side watcher for the current team
+  if (previousTeam && isTauriContext()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("stop_watching_team", { team: previousTeam });
+    } catch { /* ignore */ }
+  }
+  previousTeam = null;
+  switchEpoch++;
   console.log("[bridge] IPC bridge destroyed");
 }

@@ -1,7 +1,8 @@
 use crate::parser;
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -36,6 +37,8 @@ pub struct TeamWatcher {
     watched_teams: HashSet<String>,
     /// Paths we've registered with the notify watcher, so we can unwatch them.
     watched_paths: Vec<(String, PathBuf)>,
+    /// Stop flags for polling tasks. Setting to true causes the task to exit.
+    poll_stop_flags: HashMap<String, Arc<AtomicBool>>,
     /// App handle for spawning polling tasks.
     app_handle: AppHandle,
 }
@@ -63,6 +66,7 @@ impl TeamWatcher {
             debounce_tx,
             watched_teams: HashSet::new(),
             watched_paths: Vec::new(),
+            poll_stop_flags: HashMap::new(),
             app_handle,
         }
     }
@@ -211,13 +215,25 @@ impl TeamWatcher {
 
         self.watched_teams.insert(team_name.to_string());
 
+        // Cancel any previous polling task for this team
+        if let Some(old_flag) = self.poll_stop_flags.remove(team_name) {
+            old_flag.store(true, Ordering::Relaxed);
+        }
+
         // Start polling fallback: every 3 seconds, rebuild snapshot
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        self.poll_stop_flags.insert(team_name.to_string(), stop_flag.clone());
+
         let poll_team = team_name.to_string();
         let poll_handle = self.app_handle.clone();
         tauri::async_runtime::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(3));
             loop {
                 interval.tick().await;
+                if stop_flag.load(Ordering::Relaxed) {
+                    println!("[watcher/poll] Stopping poll for {}", poll_team);
+                    break;
+                }
                 match parser::build_team_snapshot(&poll_team) {
                     Ok(snapshot) => {
                         if let Err(e) = poll_handle.emit("team-update", &snapshot) {
@@ -243,10 +259,15 @@ impl TeamWatcher {
         Ok(())
     }
 
-    /// Stop watching a team. Removes filesystem watches.
+    /// Stop watching a team. Removes filesystem watches and cancels the polling task.
     pub fn stop_watching(&mut self, team_name: &str) {
         if !self.watched_teams.remove(team_name) {
             return;
+        }
+
+        // Cancel the polling task
+        if let Some(flag) = self.poll_stop_flags.remove(team_name) {
+            flag.store(true, Ordering::Relaxed);
         }
 
         if let Some(ref mut watcher) = self._watcher {
@@ -269,12 +290,6 @@ impl TeamWatcher {
 
             self.watched_paths.retain(|(name, _)| name != team_name);
         }
-
-        // Note: the polling task will keep running. In a production version we'd
-        // store a JoinHandle or cancellation token. For V1 this is acceptable --
-        // the poll simply rebuilds a snapshot that the frontend ignores if the
-        // team is no longer displayed. The task will be cleaned up when the app
-        // exits.
     }
 }
 
@@ -282,126 +297,163 @@ impl TeamWatcher {
 pub type WatcherState = Arc<Mutex<TeamWatcher>>;
 
 // ---------------------------------------------------------------------------
-// Tmux Pane Monitor — detects permission prompts
+// Permission Socket Server — Unix domain socket IPC with hook scripts
 // ---------------------------------------------------------------------------
 
-/// Start a background task that monitors /tmp/claude-hud-permissions/ for hook-based
-/// permission requests. Much more reliable than tmux pane scraping.
-pub fn start_pane_monitor(app_handle: AppHandle) {
+use tokio::net::UnixListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::unix::OwnedWriteHalf;
+
+/// Pending permission requests waiting for user decision.
+/// Key: req_id (auto-incrementing), Value: socket write half to send response.
+pub type PendingPermissions = Arc<Mutex<HashMap<String, OwnedWriteHalf>>>;
+
+/// Start Unix socket server at /tmp/claude-hud.sock.
+/// Receives PermissionRequest events from hook scripts, emits to frontend,
+/// and holds the socket connection open until the user responds.
+pub fn start_permission_socket(app_handle: AppHandle) -> PendingPermissions {
+    let pending: PendingPermissions = Arc::new(Mutex::new(HashMap::new()));
+    let pending_clone = pending.clone();
+
     tauri::async_runtime::spawn(async move {
-        let perm_dir = std::path::PathBuf::from("/tmp/claude-hud-permissions");
-        let mut seen_requests: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let socket_path = "/tmp/claude-hud.sock";
+
+        // Remove stale socket file
+        let _ = std::fs::remove_file(socket_path);
+
+        let listener = match UnixListener::bind(socket_path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[perm-socket] Failed to bind {}: {}", socket_path, e);
+                return;
+            }
+        };
+
+        // Set permissions so only the current user can connect
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                socket_path,
+                std::fs::Permissions::from_mode(0o700),
+            );
+        }
+
+        println!("[perm-socket] Listening on {}", socket_path);
+
+        let mut req_counter: u64 = 0;
 
         loop {
-            time::sleep(Duration::from_millis(500)).await;
-
-            if !perm_dir.is_dir() {
-                continue;
-            }
-
-            let entries = match std::fs::read_dir(&perm_dir) {
-                Ok(e) => e,
-                Err(_) => continue,
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[perm-socket] Accept error: {}", e);
+                    continue;
+                }
             };
 
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
+            req_counter += 1;
+            let req_id = format!("perm-{}", req_counter);
+            let pending_inner = pending_clone.clone();
+            let handle = app_handle.clone();
 
-                // Only process request files (not response files)
-                if !name.starts_with("req-") || !name.ends_with(".json") {
-                    continue;
-                }
-
-                // Skip already seen requests
-                if seen_requests.contains(&name) {
-                    continue;
-                }
-
-                let data = match std::fs::read_to_string(&path) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-
-                let request: serde_json::Value = match serde_json::from_str(&data) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                seen_requests.insert(name);
-
-                let req = crate::models::PermissionRequest {
-                    agent_name: request.get("session_id")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    pane_id: request.get("id")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    prompt_text: request.get("description")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("Permission requested")
-                        .to_string(),
-                    timestamp: chrono_now_iso(),
-                };
-
-                if let Err(e) = app_handle.emit("permission-request", &req) {
-                    eprintln!("[perm-monitor] Failed to emit: {}", e);
-                }
-            }
-
-            // Cleanup seen requests that no longer have files
-            seen_requests.retain(|name| perm_dir.join(name).exists());
+            tokio::spawn(async move {
+                handle_permission_connection(stream, req_id, pending_inner, handle).await;
+            });
         }
     });
+
+    pending
 }
 
-/// Check tmux pane output for Claude Code permission prompt patterns.
-///
-/// Real Claude Code prompts look like:
-/// ```
-/// Claude wants to run: Bash: npm install lodash
-/// [y] Allow once  [Y] Always allow  [n] Deny once  [N] Always deny
-/// ```
-/// Or:
-/// ```
-/// Claude wants to edit file.ts
-/// [y] Allow once  ...
-/// ```
-fn detect_permission_prompt(output: &str) -> Option<String> {
-    let lines: Vec<&str> = output.lines().collect();
+/// Handle a single connection from the hook script.
+async fn handle_permission_connection(
+    stream: tokio::net::UnixStream,
+    req_id: String,
+    pending: PendingPermissions,
+    app_handle: AppHandle,
+) {
+    let (mut reader, writer) = stream.into_split();
 
-    // Scan from bottom up for the most recent prompt
-    for (i, line) in lines.iter().enumerate().rev() {
-        let trimmed = line.trim();
+    // Read the event JSON from the hook script
+    let mut buf = vec![0u8; 65536];
+    let n = match tokio::time::timeout(Duration::from_secs(5), reader.read(&mut buf)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => return,
+    };
 
-        // Primary pattern: "[y] Allow once" or "[Y] Always allow"
-        let is_choice_line = trimmed.contains("[y]") && trimmed.contains("Allow")
-            || trimmed.contains("[Y]") && trimmed.contains("Always");
+    let data = &buf[..n];
+    let event: serde_json::Value = match serde_json::from_slice(data) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
 
-        // Secondary pattern: "Allow?" or "(y/n)" for older versions
-        let is_legacy = trimmed.contains("Allow?")
-            || (trimmed.contains("(y/n)") && trimmed.len() < 60);
+    let status = event.get("status").and_then(|s| s.as_str()).unwrap_or("");
 
-        if is_choice_line || is_legacy {
-            // Collect context: look above for "Claude wants to..." line
-            let mut context_lines: Vec<&str> = Vec::new();
-            let start = if i >= 5 { i - 5 } else { 0 };
-            for j in start..=i {
-                let l = lines[j].trim();
-                if !l.is_empty() {
-                    context_lines.push(lines[j]);
-                }
-            }
-            return Some(context_lines.join("\n").trim().to_string());
+    if status == "waiting_for_approval" {
+        // Permission request — keep connection open, store writer for response
+        let description = event.get("description")
+            .and_then(|s| s.as_str())
+            .unwrap_or("Permission requested")
+            .to_string();
+        let session_id = event.get("session_id")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let tool_name = event.get("tool_name")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        println!("[perm-socket] Permission request {}: {}", req_id, description);
+
+        // Store the writer half so we can respond later
+        {
+            let mut map = pending.lock().unwrap();
+            map.insert(req_id.clone(), writer);
+        }
+
+        // Emit to frontend
+        let perm_req = crate::models::PermissionRequest {
+            agent_name: session_id,
+            pane_id: req_id,  // Use req_id as the identifier for responding
+            prompt_text: format!("[{}] {}", tool_name, description),
+            timestamp: chrono_now_iso(),
+        };
+
+        if let Err(e) = app_handle.emit("permission-request", &perm_req) {
+            eprintln!("[perm-socket] Failed to emit: {}", e);
         }
     }
+    // Non-permission events: connection closes automatically (writer is dropped)
+}
 
-    None
+/// Send a response to a pending permission request via its socket connection.
+pub async fn respond_to_permission(
+    pending: &PendingPermissions,
+    req_id: &str,
+    decision: &str,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let mut writer = {
+        let mut map = pending.lock().map_err(|e| format!("Lock error: {}", e))?;
+        map.remove(req_id)
+            .ok_or_else(|| format!("No pending permission for {}", req_id))?
+    };
+
+    let response = serde_json::json!({
+        "decision": decision,
+        "reason": reason.unwrap_or(""),
+    });
+    let data = serde_json::to_vec(&response)
+        .map_err(|e| format!("Serialize error: {}", e))?;
+
+    writer.write_all(&data).await
+        .map_err(|e| format!("Write error: {}", e))?;
+    writer.shutdown().await
+        .map_err(|e| format!("Shutdown error: {}", e))?;
+
+    println!("[perm-socket] Responded to {}: {}", req_id, decision);
+    Ok(())
 }
 
 /// Simple ISO timestamp for now.

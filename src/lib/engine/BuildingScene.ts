@@ -61,6 +61,12 @@ export class BuildingScene {
   private onFloorClick: ((name: string) => void) | null = null;
   private assetsLoaded = false;
 
+  // Day/night cycle
+  private celestialContainer: Container | null = null;
+  private sunText: Text | null = null;
+  private moonText: Text | null = null;
+  private cyclePhase = 0; // 0..1 continuous
+
   constructor(el: HTMLDivElement) { this.el = el; }
 
   async init(onFloorClick: (name: string) => void): Promise<void> {
@@ -89,6 +95,10 @@ export class BuildingScene {
     // Load sprite assets
     await loadAllAssets();
     this.assetsLoaded = true;
+
+    // Start day/night animation loop
+    this.app.ticker.maxFPS = 30;
+    this.app.ticker.add(() => this.animateCelestial());
   }
 
   update(teams: Map<string, TeamSnapshot>): void {
@@ -108,6 +118,9 @@ export class BuildingScene {
     // Sky with stars
     this.drawStars(canvasW, groundY - numFloors * FLOOR_H - ROOF_H);
 
+    // Sun/Moon celestial cycle
+    this.drawCelestial(canvasW);
+
     // Ground + sidewalk + door
     this.drawGround(ox, groundY, canvasW);
 
@@ -123,15 +136,81 @@ export class BuildingScene {
       this.drawRoof(ox, groundY - numFloors * FLOOR_H - ROOF_H);
     }
 
-    // No teams message
-    if (numFloors === 0) {
-      const t = new Text({
-        text: "NO ACTIVE TEAMS",
-        style: new TextStyle({ fontFamily: "monospace", fontSize: 14, fill: 0x555555 }),
+    // Title — always visible
+    {
+      const cx = canvasW / 2;
+      // Always place title in the upper area of the sky
+      const roofTop = numFloors > 0
+        ? groundY - numFloors * FLOOR_H - ROOF_H
+        : canvasH / 2 + 20;
+      const titleY = numFloors > 0
+        ? Math.min(canvasH * 0.3, Math.max(30, roofTop - 28))
+        : canvasH * 0.3;
+
+      // Decorative icons
+      const icons = new Text({
+        text: "\uD83D\uDC02  \uD83C\uDF3E  \uD83D\uDC02",
+        style: new TextStyle({ fontSize: numFloors > 0 ? 20 : 32 }),
       });
-      t.anchor.set(0.5);
-      t.x = canvasW / 2; t.y = canvasH / 2 - 30;
-      this.scene.addChild(t);
+      icons.anchor.set(0.5);
+      icons.x = cx; icons.y = titleY - (numFloors > 0 ? 28 : 52);
+      this.scene.addChild(icons);
+
+      // Main title
+      const title = new Text({
+        text: "\u6B22\u8FCE\u6765\u5230\u4F60\u7684 AI \u725B\u9A6C\u519C\u573A\uFF5E",
+        style: new TextStyle({
+          fontFamily: "monospace",
+          fontSize: numFloors > 0 ? 16 : 24,
+          fill: 0xccaa44,
+          letterSpacing: 2,
+          dropShadow: { color: 0x665522, distance: 2, angle: Math.PI / 4, blur: 0 },
+        }),
+      });
+      title.anchor.set(0.5);
+      title.x = cx; title.y = titleY;
+      this.scene.addChild(title);
+
+      // Subtitle
+      const sub = new Text({
+        text: "Welcome to Your AI Farm",
+        style: new TextStyle({
+          fontFamily: "monospace",
+          fontSize: numFloors > 0 ? 9 : 12,
+          fill: 0x555566,
+          letterSpacing: 3,
+        }),
+      });
+      sub.anchor.set(0.5);
+      sub.x = cx; sub.y = titleY + (numFloors > 0 ? 22 : 30);
+      this.scene.addChild(sub);
+
+      // Hint + fence — only when no teams
+      if (numFloors === 0) {
+        const hint = new Text({
+          text: "\u521B\u5EFA\u4E00\u4E2A\u56E2\u961F\u5F00\u59CB\u5DE5\u4F5C\u5427  \u2192  ~/.claude/teams/",
+          style: new TextStyle({
+            fontFamily: "monospace",
+            fontSize: 9,
+            fill: 0x3a3a48,
+          }),
+        });
+        hint.anchor.set(0.5);
+        hint.x = cx; hint.y = titleY + 54;
+        this.scene.addChild(hint);
+
+        const fence = new Text({
+          text: "\u2500\u2524\u256C\u251C\u2500\u2500\u2524\u256C\u251C\u2500\u2500\u2524\u256C\u251C\u2500\u2500\u2524\u256C\u251C\u2500",
+          style: new TextStyle({
+            fontFamily: "monospace",
+            fontSize: 10,
+            fill: 0x3a3a48,
+          }),
+        });
+        fence.anchor.set(0.5);
+        fence.x = cx; fence.y = titleY + 78;
+        this.scene.addChild(fence);
+      }
     }
   }
 
@@ -182,17 +261,30 @@ export class BuildingScene {
 
     // Neon sign
     const title = new Text({
-      text: "CLAUDE TOWER",
+      text: "\u514B\u52B3\u5FB7\u5927\u53A6",
       style: new TextStyle({
-        fontFamily: "monospace", fontSize: 11, fill: P.neonCyan,
-        fontWeight: "bold", letterSpacing: 3,
+        fontFamily: "monospace", fontSize: 12, fill: P.neonCyan,
+        fontWeight: "bold", letterSpacing: 4,
         dropShadow: { alpha: 0.5, blur: 4, color: P.neonGlow, distance: 0 },
       }),
     });
     title.anchor.set(0.5, 0);
     title.x = ox + BUILDING_W / 2;
-    title.y = y + 12;
+    title.y = y + 10;
     this.scene.addChild(title);
+
+    // Slogan — right side of roof bar
+    const slogan = new Text({
+      text: "\u6C38\u4E0D\u65AD\u7535\uFF0Copus\u6BD2\u836F\u4E0D\u9650\u91CF\u4F9B\u5E94",
+      style: new TextStyle({
+        fontFamily: "monospace", fontSize: 5, fill: 0xff4444,
+        letterSpacing: 0.5,
+      }),
+    });
+    slogan.anchor.set(1, 0.5);
+    slogan.x = ox + BUILDING_W - 6;
+    slogan.y = y + ROOF_H - 10;
+    this.scene.addChild(slogan);
   }
 
   private drawFloor(ox: number, y: number, name: string, snap: TeamSnapshot, floorIdx: number): void {
@@ -357,6 +449,64 @@ export class BuildingScene {
       row++;
     }
     parent.addChild(g);
+  }
+
+  // ── Celestial day/night cycle ─────────────────────────────────
+
+  private drawCelestial(canvasW: number): void {
+    this.celestialContainer = new Container();
+    this.scene.addChild(this.celestialContainer);
+
+    // Sun
+    this.sunText = new Text({
+      text: "\u2600\uFE0F",
+      style: new TextStyle({ fontSize: 24 }),
+    });
+    this.sunText.anchor.set(0.5);
+    this.celestialContainer.addChild(this.sunText);
+
+    // Moon
+    this.moonText = new Text({
+      text: "\uD83C\uDF19",
+      style: new TextStyle({ fontSize: 20 }),
+    });
+    this.moonText.anchor.set(0.5);
+    this.celestialContainer.addChild(this.moonText);
+
+    // Position immediately
+    this.updateCelestialPositions(canvasW);
+  }
+
+  private updateCelestialPositions(canvasW: number): void {
+    if (!this.sunText || !this.moonText) return;
+
+    const cx = canvasW / 2;
+    const arcW = canvasW * 0.4;  // horizontal range
+    const arcH = 80;             // vertical arc height
+    const baseY = 120;           // top of arc (pushed down from top edge)
+
+    // Sun: phase 0→1 = left→right across sky, then below horizon
+    // Moon: offset by 0.5 (opposite side)
+    const sunAngle = this.cyclePhase * Math.PI;
+    const moonAngle = ((this.cyclePhase + 0.5) % 1) * Math.PI;
+
+    // Sun position on arc
+    this.sunText.x = cx + Math.cos(sunAngle) * arcW;
+    this.sunText.y = baseY - Math.sin(sunAngle) * arcH;
+    this.sunText.alpha = Math.sin(sunAngle) > 0.05 ? Math.min(1, Math.sin(sunAngle) * 2) : 0;
+
+    // Moon position on arc
+    this.moonText.x = cx + Math.cos(moonAngle) * arcW;
+    this.moonText.y = baseY - Math.sin(moonAngle) * arcH;
+    this.moonText.alpha = Math.sin(moonAngle) > 0.05 ? Math.min(1, Math.sin(moonAngle) * 2) : 0;
+  }
+
+  private animateCelestial(): void {
+    if (!this.app || !this.celestialContainer) return;
+
+    // Full cycle every ~30 seconds
+    this.cyclePhase = (this.cyclePhase + 0.0005) % 1;
+    this.updateCelestialPositions(600);
   }
 
   destroy(): void {

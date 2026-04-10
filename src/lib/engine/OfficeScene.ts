@@ -48,8 +48,12 @@ export class OfficeScene {
   private spawnTimer: ReturnType<typeof setTimeout> | null = null;
   private static SPAWN_DELAY = 1500; // ms between each character spawn
 
-  // Debounce: timestamp of last onAgentsChanged processing
-  private lastAgentsUpdate = 0;
+  // After forceReset, the next onAgentsChanged should teleport instead of walk-in
+  private pendingTeleport = false;
+
+  // Track consecutive absent updates per role — require 2+ absences before despawn
+  private absentCount = new Map<string, number>();
+  private static ABSENT_THRESHOLD = 2;
 
   // Message walk animation
   private lastMessageCount = 0;
@@ -230,23 +234,30 @@ export class OfficeScene {
   // ── Store change handlers ──────────────────────────────────────
 
   private onAgentsChanged(agents: AgentState[]): void {
-    // Debounce: skip if called within 400ms of last processing
-    const now = Date.now();
-    if (now - this.lastAgentsUpdate < 400) return;
-    this.lastAgentsUpdate = now;
-
     const currentIds = new Set(this.characters.keys());
     const queuedIds = new Set(this.spawnQueue.map((a) => a.role));
     const newIds = new Set(agents.map((a) => a.role));
 
-    // Smart spawn: if scene is empty and agents arrive, teleport to desk
-    const shouldTeleport = this.characters.size === 0 && this.spawnQueue.length === 0 && agents.length > 0;
+    // Determine teleport mode: after forceReset OR scene is completely empty
+    const shouldTeleport =
+      this.pendingTeleport ||
+      (this.characters.size === 0 && this.spawnQueue.length === 0 && agents.length > 0);
 
+    if (this.pendingTeleport && agents.length > 0) {
+      this.pendingTeleport = false;
+    }
+
+    // --- 1. Handle new / existing agents ---
     for (const agent of agents) {
+      // Agent is present — clear its absent counter
+      this.absentCount.delete(agent.role);
+
       if (!currentIds.has(agent.role) && !queuedIds.has(agent.role)) {
+        // New agent — add to spawn queue
         (agent as AgentState & { _teleport?: boolean })._teleport = shouldTeleport;
         this.spawnQueue.push(agent);
       } else if (currentIds.has(agent.role)) {
+        // Existing agent — update status only
         const char = this.characters.get(agent.role);
         if (char) {
           const statusMap: Record<string, "working" | "idle" | "blocked" | "offline"> = {
@@ -265,11 +276,18 @@ export class OfficeScene {
 
     this.processSpawnQueue();
 
+    // --- 2. Handle absent agents — require consecutive absences before despawn ---
     for (const roleId of currentIds) {
       if (!newIds.has(roleId)) {
-        const char = this.characters.get(roleId);
-        if (char && char.state !== "leaving") {
-          this.despawnCharacter(roleId);
+        const count = (this.absentCount.get(roleId) ?? 0) + 1;
+        this.absentCount.set(roleId, count);
+
+        if (count >= OfficeScene.ABSENT_THRESHOLD) {
+          const char = this.characters.get(roleId);
+          if (char && char.state !== "leaving") {
+            this.despawnCharacter(roleId);
+          }
+          this.absentCount.delete(roleId);
         }
       }
     }
@@ -692,10 +710,14 @@ export class OfficeScene {
     // Reset meeting state
     this.isMeetingActive = false;
 
+    // Reset absence tracking
+    this.absentCount.clear();
+
+    // Next onAgentsChanged should teleport characters to desks, not walk from door
+    this.pendingTeleport = true;
+
     // Reset dynamic role assignments
     resetDynamicRoles();
-
-    // After reset, characters.size === 0, so onAgentsChanged will auto-teleport
 
     // Force re-scale
     this.updateScale();
@@ -717,6 +739,8 @@ export class OfficeScene {
       clearTimeout(this.spawnTimer);
       this.spawnTimer = null;
     }
+
+    this.absentCount.clear();
 
     for (const roleId of [...this.characters.keys()]) {
       this.cleanupCharacter(roleId);

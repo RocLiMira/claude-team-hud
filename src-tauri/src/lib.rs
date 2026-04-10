@@ -4,7 +4,7 @@ pub mod watcher;
 
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
-use watcher::WatcherState;
+use watcher::{PendingPermissions, WatcherState};
 
 /// List available teams from ~/.claude/teams/
 #[tauri::command]
@@ -77,18 +77,21 @@ fn get_pane_content(pane_id: String, lines: Option<u32>) -> Result<String, Strin
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Respond to a permission request from the hook system.
-/// Writes a response file that the hook script reads.
+/// Respond to a permission request via the Unix socket connection.
+/// The req_id corresponds to the pane_id field in the PermissionRequest event.
 #[tauri::command]
-fn respond_permission_hook(req_id: String, decision: String, reason: Option<String>) -> Result<(), String> {
-    let resp_file = format!("/tmp/claude-hud-permissions/resp-{}.json", req_id);
-    let response = serde_json::json!({
-        "decision": decision,
-        "reason": reason.unwrap_or_default(),
-    });
-    std::fs::write(&resp_file, serde_json::to_string(&response).unwrap_or_default())
-        .map_err(|e| format!("Failed to write response: {}", e))?;
-    Ok(())
+async fn respond_permission_hook(
+    req_id: String,
+    decision: String,
+    reason: Option<String>,
+    state: tauri::State<'_, PendingPermissions>,
+) -> Result<(), String> {
+    watcher::respond_to_permission(
+        &state,
+        &req_id,
+        &decision,
+        reason.as_deref(),
+    ).await
 }
 
 /// Respond to a permission prompt in a tmux pane.
@@ -162,7 +165,7 @@ fn install_permission_hook() -> Result<(), String> {
                     "hooks": [{
                         "type": "command",
                         "command": format!("python3 {}", hook_path.display()),
-                        "timeout": 300
+                        "timeout": 86400
                     }]
                 }));
 
@@ -188,11 +191,8 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // TeamWatcher::new() creates channels and a notify watcher synchronously,
-            // then spawns async tasks via tauri::async_runtime (not tokio::spawn)
-            // so it works in the setup() context.
+            // TeamWatcher
             let watcher = watcher::TeamWatcher::new(handle.clone());
-
             app.manage(Arc::new(Mutex::new(watcher)) as WatcherState);
 
             // Install permission hook if not already present
@@ -200,8 +200,9 @@ pub fn run() {
                 eprintln!("[setup] Failed to install permission hook: {}", e);
             }
 
-            // Start permission request monitor
-            watcher::start_pane_monitor(handle);
+            // Start Unix socket server for permission requests
+            let pending = watcher::start_permission_socket(handle);
+            app.manage(pending);
 
             Ok(())
         })
