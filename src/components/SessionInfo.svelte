@@ -81,36 +81,48 @@
   .session-info {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
   }
   .info-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    min-width: 0;
   }
   .label {
-    font-family: var(--font-pixel, monospace);
-    font-size: 7px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-secondary, #7a7a88);
     text-transform: uppercase;
+    flex-shrink: 0;
+    margin-right: 8px;
   }
   .value {
     font-family: monospace;
-    font-size: 10px;
+    font-size: 9px;
     color: var(--text-primary, #e6f1ff);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
   .team-name {
     color: var(--accent-cyan, #00cccc);
-    font-family: var(--font-pixel, monospace);
+    font-family: monospace;
     font-size: 9px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .elapsed {
     color: var(--accent-yellow, #ccaa22);
-    font-family: var(--font-pixel, monospace);
+    font-family: monospace;
   }
   .placeholder {
     color: var(--text-secondary, #7a7a88);
     font-style: italic;
-    font-size: 8px;
+    font-family: monospace;
+    font-size: 9px;
   }
 </style>

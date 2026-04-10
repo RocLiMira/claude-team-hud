@@ -6,6 +6,7 @@ export interface TokenMetrics {
   burnRate: number;
   costUsd: number;
   rateLimitPct: number;
+  rateLimitReset: string | null;
 }
 
 export interface EnvironmentState {
@@ -31,6 +32,7 @@ export const metricsStore = writable<TokenMetrics>({
   burnRate: 0,
   costUsd: 0,
   rateLimitPct: 0,
+  rateLimitReset: null,
 });
 
 export const environmentStore = writable<EnvironmentState>({

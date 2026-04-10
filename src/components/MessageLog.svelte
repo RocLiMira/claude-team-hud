@@ -7,8 +7,19 @@
   let scrollContainer: HTMLDivElement | undefined = $state(undefined);
   let prevCount = 0;
 
+  /** Filter out JSON protocol messages (idle_notification, shutdown_*, etc.) */
+  function isSystemMessage(text: string): boolean {
+    if (!text.startsWith("{")) return false;
+    try {
+      const obj = JSON.parse(text);
+      return typeof obj.type === "string";
+    } catch {
+      return false;
+    }
+  }
+
   const unsub = messagesStore.subscribe(async (v) => {
-    messages = v;
+    messages = v.filter((m) => !isSystemMessage(m.text));
     // Auto-scroll when new messages arrive
     if (v.length > prevCount && scrollContainer) {
       prevCount = v.length;
@@ -63,7 +74,7 @@
           {#if expandedIndex === idx}
             {msg.text}
           {:else}
-            {truncateText(msg.text, 50)}
+            {truncateText(msg.text, 200)}
           {/if}
         </div>
       </button>
@@ -73,11 +84,12 @@
 
 <style>
   .message-log {
-    max-height: 200px;
+    height: 100%;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
+    padding: 8px;
   }
   /* Pixel-art scrollbar */
   .message-log::-webkit-scrollbar {
@@ -122,13 +134,13 @@
   }
   .msg-time {
     font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-size: 11px;
     color: var(--text-secondary, #7a7a88);
     flex-shrink: 0;
   }
   .msg-route {
     font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-size: 11px;
     color: var(--accent-cyan, #00cccc);
     white-space: nowrap;
     overflow: hidden;
@@ -138,14 +150,14 @@
     color: var(--text-secondary, #7a7a88);
   }
   .msg-text {
-    font-size: 8px;
-    line-height: 1.3;
+    font-size: 12px;
+    line-height: 1.4;
     word-break: break-word;
     color: var(--text-primary, #e6f1ff);
   }
   .placeholder {
     color: var(--text-secondary, #7a7a88);
     font-style: italic;
-    font-size: 8px;
+    font-size: 12px;
   }
 </style>

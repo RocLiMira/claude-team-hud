@@ -12,6 +12,7 @@ export interface AgentState {
   messageCount: number;
   tokenUsage: number;
   spawnTime: string | null;
+  paneId: string | null;
 }
 
 export const agentsStore = writable<AgentState[]>([]);

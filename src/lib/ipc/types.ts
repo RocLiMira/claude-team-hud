@@ -13,6 +13,7 @@ export interface RawAgentState {
   message_count: number;
   token_usage: number;
   spawn_time: string | null;
+  pane_id: string | null;
 }
 
 export interface RawMessage {
@@ -39,6 +40,7 @@ export interface RawTokenUsage {
   burn_rate: number;
   cost_usd: number;
   rate_limit_pct: number;
+  rate_limit_reset: string | null;
 }
 
 export interface TeamSnapshot {

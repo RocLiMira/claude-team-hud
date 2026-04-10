@@ -14,9 +14,8 @@
   const SECTIONS: SectionDef[] = [
     { key: "session", label: "SESSION", defaultOpen: true },
     { key: "agents", label: "AGENTS", defaultOpen: true },
-    { key: "tasks", label: "TASKS", defaultOpen: false },
-    { key: "messages", label: "MESSAGES", defaultOpen: false },
-    { key: "tokens", label: "TOKENS", defaultOpen: false },
+    { key: "tasks", label: "TASKS", defaultOpen: true },
+    { key: "tokens", label: "TOKENS", defaultOpen: true },
   ];
 
   let openSections: Record<string, boolean> = $state(
@@ -64,19 +63,22 @@
 
 <style>
   .side-panel {
-    padding: 12px;
-    font-family: var(--font-pixel, monospace);
-    font-size: 8px;
+    padding: 8px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-primary, #e6f1ff);
     user-select: none;
+    overflow: hidden;
+    box-sizing: border-box;
   }
   .panel-title {
-    font-size: 12px;
+    font-family: monospace;
+    font-size: 11px;
     text-align: center;
-    margin-bottom: 16px;
+    margin-bottom: 10px;
     color: var(--accent-cyan, #00cccc);
     border-bottom: 2px solid var(--border, #3a3a48);
-    padding-bottom: 8px;
+    padding-bottom: 6px;
   }
   .panel-section {
     margin-bottom: 4px;
@@ -85,15 +87,15 @@
   .section-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     width: 100%;
-    padding: 6px 8px;
+    padding: 4px 6px;
     background: #12122a;
     border: none;
     cursor: pointer;
-    font-family: var(--font-pixel, monospace);
+    font-family: monospace;
     color: var(--accent-yellow, #ccaa22);
-    font-size: 9px;
+    font-size: 11px;
     text-align: left;
   }
   .section-header:hover {
@@ -101,7 +103,7 @@
   }
   .section-toggle {
     font-family: monospace;
-    font-size: 9px;
+    font-size: 11px;
     color: var(--text-secondary, #7a7a88);
     flex-shrink: 0;
   }
@@ -109,7 +111,8 @@
     letter-spacing: 1px;
   }
   .section-content {
-    padding: 8px;
+    padding: 6px;
     border-top: 1px solid #2a2a3a;
+    overflow: hidden;
   }
 </style>

@@ -2,6 +2,10 @@
   import "./app.css";
   import { onMount, onDestroy } from "svelte";
   import SidePanel from "./components/SidePanel.svelte";
+  import MessageLog from "./components/MessageLog.svelte";
+  import MessageInput from "./components/MessageInput.svelte";
+  import PermissionDialog from "./components/PermissionDialog.svelte";
+  import PaneViewer from "./components/PaneViewer.svelte";
   import {
     initBridge,
     destroyBridge,
@@ -9,26 +13,50 @@
     availableTeams,
     activeTeam,
     bridgeReady,
+    clearStores,
   } from "./lib/ipc/bridge";
   import { OfficeScene } from "./lib/engine/OfficeScene";
+  import { BuildingScene } from "./lib/engine/BuildingScene";
+  import { allTeamsStore } from "./lib/state/multiTeam";
+  import type { TeamSnapshot } from "./lib/ipc/types";
 
   let canvasContainer: HTMLDivElement;
+  let buildingContainer: HTMLDivElement;
   let officeScene: OfficeScene | null = null;
+  let buildingScene: BuildingScene | null = null;
   let panelOpen = $state(false);
   let teams: string[] = $state([]);
   let currentTeam: string | null = $state(null);
   let ready = $state(false);
+  let viewMode: "building" | "floor" = $state("building");
+  let allTeamSnapshots = $state(new Map<string, TeamSnapshot>());
 
   const unsubTeams = availableTeams.subscribe((v) => (teams = v));
-  const unsubActive = activeTeam.subscribe((v) => (currentTeam = v));
+  const unsubActive = activeTeam.subscribe((v) => {
+    // Don't auto-reset here — enterFloor handles forceReset explicitly
+    currentTeam = v;
+  });
   const unsubReady = bridgeReady.subscribe((v) => (ready = v));
+  const unsubAllTeams = allTeamsStore.subscribe((v) => {
+    allTeamSnapshots = v;
+    if (buildingScene && viewMode === "building") {
+      buildingScene.update(v);
+    }
+  });
 
   function togglePanel() {
     panelOpen = !panelOpen;
+    // Force re-scale after panel CSS transition settles
+    if (officeScene) {
+      requestAnimationFrame(() => {
+        officeScene?.rescale();
+        // Double-tap for WKWebView
+        setTimeout(() => officeScene?.rescale(), 100);
+      });
+    }
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Tab toggles panel, but not when an input is focused
     if (
       e.key === "Tab" &&
       !(e.target instanceof HTMLInputElement) &&
@@ -37,6 +65,10 @@
       e.preventDefault();
       togglePanel();
     }
+    // ESC returns to building view
+    if (e.key === "Escape" && viewMode === "floor") {
+      exitFloor();
+    }
   }
 
   async function handleTeamChange(e: Event) {
@@ -44,78 +76,140 @@
     await switchTeam(select.value);
   }
 
+  // Force WKWebView repaint every 2s (workaround for stale DOM rendering)
+  let repaintTick = $state(0);
+  let repaintInterval: ReturnType<typeof setInterval> | null = null;
+
+  async function enterFloor(teamName: string) {
+    // 1. Reset scene FIRST
+    if (officeScene) officeScene.forceReset();
+    // 2. Clear stores
+    clearStores();
+    // 3. Switch to new team BEFORE showing floor view
+    //    This ensures fresh snapshot is fetched and applied
+    await switchTeam(teamName);
+    // 4. Only now switch view (data is ready)
+    viewMode = "floor";
+    // 5. Rescale
+    requestAnimationFrame(() => {
+      officeScene?.rescale();
+      setTimeout(() => officeScene?.rescale(), 200);
+    });
+  }
+
+  function exitFloor() {
+    viewMode = "building";
+    if (buildingScene) {
+      buildingScene.update(allTeamSnapshots);
+    }
+  }
+
   onMount(async () => {
     await initBridge();
+
+    // Init office scene (floor view)
     officeScene = new OfficeScene(canvasContainer);
     await officeScene.init();
+
+    // Init building scene (overview)
+    buildingScene = new BuildingScene(buildingContainer);
+    await buildingScene.init((teamName) => enterFloor(teamName));
+
+    // Auto-select view: building if multiple teams, floor if single
+    if (teams.length <= 1 && currentTeam) {
+      viewMode = "floor";
+    }
+
+    repaintInterval = setInterval(() => {
+      repaintTick = Date.now();
+    }, 2000);
   });
 
   onDestroy(() => {
     officeScene?.destroy();
+    buildingScene?.destroy();
     destroyBridge();
     unsubTeams();
     unsubActive();
     unsubReady();
+    unsubAllTeams();
+    if (repaintInterval) clearInterval(repaintInterval);
   });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
+<PermissionDialog />
+<PaneViewer />
 <div class="hud-root">
-  <div class="canvas-area" bind:this={canvasContainer}>
-    <!-- No Active Team overlay -->
-    {#if ready && currentTeam === null}
-      <div class="no-team-overlay">
-        <div class="no-team-box">
-          <h2 class="no-team-title">NO ACTIVE TEAM</h2>
-          <p class="no-team-text">
-            No team directories found.<br />
-            Create a team in ~/.claude/teams/ to get started.
-          </p>
+  <!-- Top area: canvas + info panel -->
+  <div class="top-area">
+    <!-- Building view -->
+    <div class="canvas-area" bind:this={buildingContainer}
+      style:display={viewMode === "building" ? "block" : "none"}>
+      {#if ready && teams.length === 0}
+        <div class="no-team-overlay">
+          <div class="no-team-box">
+            <h2 class="no-team-title">NO ACTIVE TEAM</h2>
+            <p class="no-team-text">
+              No team directories found.<br />
+              Create a team in ~/.claude/teams/ to get started.
+            </p>
+          </div>
         </div>
-      </div>
-    {/if}
+      {/if}
+    </div>
 
-    <!-- Team selector (when multiple teams) -->
-    {#if teams.length > 1}
-      <div class="team-selector">
-        <label class="team-selector-label" for="team-select">TEAM:</label>
-        <select
-          id="team-select"
-          class="team-select"
-          onchange={handleTeamChange}
-          value={currentTeam ?? ""}
-        >
-          {#each teams as team (team)}
-            <option value={team}>{team}</option>
-          {/each}
-        </select>
+    <!-- Floor view -->
+    <div class="canvas-area" bind:this={canvasContainer}
+      style:display={viewMode === "floor" ? "block" : "none"}>
+      {#if viewMode === "floor"}
+        <button class="back-btn" onclick={exitFloor}>← BUILDING</button>
+      {/if}
+    </div>
+
+    <button
+      class="panel-toggle"
+      class:panel-toggle-shifted={panelOpen}
+      onclick={togglePanel}
+    >
+      {panelOpen ? "\u25B6" : "\u25C0"}
+    </button>
+
+    {#if panelOpen}
+      <div class="panel-area info-panel" data-tick={repaintTick}>
+        <SidePanel />
       </div>
     {/if}
   </div>
 
-  <button
-    class="panel-toggle"
-    class:panel-toggle-shifted={panelOpen}
-    onclick={togglePanel}
-  >
-    {panelOpen ? "\u25B6" : "\u25C0"}
-  </button>
-
-  {#if panelOpen}
-    <div class="panel-area">
-      <SidePanel />
+  <!-- Bottom area: messages (only in floor view) -->
+  {#if viewMode === "floor"}
+  <div class="bottom-area" data-tick={repaintTick}>
+    <div class="msg-header-bar">
+      <span class="msg-title">MESSAGES</span>
+      <MessageInput />
     </div>
+    <div class="msg-body">
+      <MessageLog />
+    </div>
+  </div>
   {/if}
 </div>
 
 <style>
   .hud-root {
     display: flex;
+    flex-direction: column;
     width: 100vw;
     height: 100vh;
     background: #0a0a14;
     overflow: hidden;
+  }
+  .top-area {
+    display: flex;
+    flex: 1;
+    min-height: 0;
     position: relative;
   }
   .canvas-area {
@@ -135,21 +229,54 @@
     padding: 8px 4px;
     cursor: pointer;
     font-family: monospace;
-    font-size: 14px;
+    font-size: 16px;
   }
   .panel-toggle:hover {
     background: #2a2a3e;
   }
   .panel-toggle-shifted {
-    right: 320px;
+    right: 340px;
   }
   .panel-area {
-    width: 320px;
-    min-width: 320px;
     background: #1a1a2e;
     border-left: 2px solid #3a3a48;
     overflow-y: auto;
     height: 100%;
+    will-change: contents;
+    transform: translateZ(0);
+  }
+  .info-panel {
+    width: 340px;
+    min-width: 340px;
+  }
+  /* Bottom message area */
+  .bottom-area {
+    height: 180px;
+    min-height: 120px;
+    background: #1a1a2e;
+    border-top: 2px solid #3a3a48;
+    display: flex;
+    flex-direction: column;
+    font-family: var(--font-pixel, monospace);
+  }
+  .msg-header-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 12px;
+    background: #12122a;
+    border-bottom: 1px solid #3a3a48;
+    flex-shrink: 0;
+  }
+  .msg-title {
+    font-size: 11px;
+    color: var(--accent-yellow, #ccaa22);
+    letter-spacing: 2px;
+    flex-shrink: 0;
+  }
+  .msg-body {
+    flex: 1;
+    overflow: hidden;
   }
   /* Pixel-art scrollbar for panel */
   .panel-area::-webkit-scrollbar {
@@ -180,13 +307,13 @@
   }
   .no-team-title {
     font-family: var(--font-pixel, monospace);
-    font-size: 14px;
+    font-size: 16px;
     color: var(--accent-red, #cc4444);
     margin-bottom: 12px;
   }
   .no-team-text {
     font-family: monospace;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-secondary, #7a7a88);
     line-height: 1.6;
   }
@@ -206,12 +333,12 @@
   }
   .team-selector-label {
     font-family: var(--font-pixel, monospace);
-    font-size: 8px;
+    font-size: 11px;
     color: var(--text-secondary, #7a7a88);
   }
   .team-select {
     font-family: monospace;
-    font-size: 10px;
+    font-size: 13px;
     color: var(--accent-cyan, #00cccc);
     background: #12122a;
     border: 1px solid #3a3a48;
@@ -220,5 +347,23 @@
   }
   .team-select:focus {
     outline: 1px solid var(--accent-cyan, #00cccc);
+  }
+  /* Back to building button */
+  .back-btn {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 60;
+    font-family: var(--font-pixel, monospace);
+    font-size: 12px;
+    color: #00cccc;
+    background: #1a1a2e;
+    border: 2px solid #3a3a48;
+    padding: 4px 12px;
+    cursor: pointer;
+    letter-spacing: 1px;
+  }
+  .back-btn:hover {
+    background: #2a2a3e;
   }
 </style>

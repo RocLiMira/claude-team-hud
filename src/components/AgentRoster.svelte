@@ -107,20 +107,27 @@
     width: 100%;
     border-collapse: collapse;
     font-family: monospace;
-    font-size: 8px;
+    font-size: 9px;
     border: 2px solid var(--border, #3a3a48);
+    table-layout: fixed;
   }
   thead tr {
     background: #12122a;
   }
   th {
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-secondary, #7a7a88);
     text-align: left;
-    padding: 4px 3px;
+    padding: 3px 2px;
     border-bottom: 2px solid var(--border, #3a3a48);
+    overflow: hidden;
   }
+  th:nth-child(1) { width: 14px; }
+  th:nth-child(2) { width: 60px; }
+  th:nth-child(3) { width: 50px; }
+  th:nth-child(4) { /* flex: auto via table-layout */ }
+  th:nth-child(5) { width: 32px; }
   .agent-row {
     border-bottom: 1px solid #2a2a3a;
   }
@@ -128,12 +135,17 @@
     background: #22223a;
   }
   td {
-    padding: 3px;
+    padding: 2px 2px;
     vertical-align: middle;
     color: var(--text-primary, #e6f1ff);
+    font-family: monospace;
+    font-size: 9px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .role-dot-cell {
-    width: 12px;
+    width: 14px;
     text-align: center;
   }
   .role-dot {
@@ -144,40 +156,42 @@
   }
   .name-cell {
     white-space: nowrap;
-    max-width: 60px;
+    width: 60px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .role-tag {
-    font-family: var(--font-pixel, monospace);
-    font-size: 7px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-primary, #e6f1ff);
   }
   .status-badge {
     display: inline-block;
-    padding: 1px 4px;
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    padding: 1px 3px;
+    font-family: monospace;
+    font-size: 9px;
     color: #000;
     text-transform: uppercase;
   }
   .task-cell {
-    max-width: 80px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 7px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-secondary, #7a7a88);
   }
   .model-cell {
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-secondary, #7a7a88);
     text-align: center;
+    width: 32px;
   }
   .placeholder {
     color: var(--text-secondary, #7a7a88);
     font-style: italic;
-    font-size: 8px;
+    font-family: monospace;
+    font-size: 9px;
   }
 </style>

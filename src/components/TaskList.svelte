@@ -53,11 +53,13 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+    overflow: hidden;
   }
   .task-item {
     border: 2px solid var(--border, #3a3a48);
-    padding: 6px;
+    padding: 4px;
     background: #12122a;
+    overflow: hidden;
   }
   .task-item:hover {
     background: #1a1a34;
@@ -68,28 +70,32 @@
   .task-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 3px;
+    gap: 4px;
+    margin-bottom: 2px;
+    min-width: 0;
   }
   .task-id {
-    font-family: var(--font-pixel, monospace);
-    font-size: 7px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--accent-cyan, #00cccc);
+    flex-shrink: 0;
   }
   .task-status {
     display: inline-block;
-    padding: 1px 4px;
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    padding: 1px 3px;
+    font-family: monospace;
+    font-size: 9px;
     color: #000;
+    flex-shrink: 0;
   }
   .blocked-badge {
     display: inline-block;
-    padding: 1px 4px;
+    padding: 1px 3px;
     background: #cc4444;
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-family: monospace;
+    font-size: 9px;
     color: #fff;
+    flex-shrink: 0;
     animation: blink-blocked 1s step-end infinite;
   }
   @keyframes blink-blocked {
@@ -98,18 +104,22 @@
   }
   .task-subject {
     font-family: monospace;
-    font-size: 8px;
+    font-size: 9px;
     color: var(--text-primary, #e6f1ff);
     margin-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .task-owner {
     font-family: monospace;
-    font-size: 7px;
+    font-size: 9px;
     color: var(--text-secondary, #7a7a88);
   }
   .placeholder {
     color: var(--text-secondary, #7a7a88);
     font-style: italic;
-    font-size: 8px;
+    font-family: monospace;
+    font-size: 9px;
   }
 </style>

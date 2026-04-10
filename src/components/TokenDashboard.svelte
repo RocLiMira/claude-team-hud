@@ -9,6 +9,7 @@
     burnRate: 0,
     costUsd: 0,
     rateLimitPct: 0,
+    rateLimitReset: null,
   });
 
   const unsub = metricsStore.subscribe((v) => (metrics = v));
@@ -80,7 +81,7 @@
   <!-- Rate limit bar -->
   <div class="rate-limit">
     <div class="rate-label">
-      <span>RATE LIMIT</span>
+      <span>RATE LIMIT{metrics.rateLimitReset ? ` (resets ${metrics.rateLimitReset})` : ""}</span>
       <span style="color: {getRateLimitColor(metrics.rateLimitPct)}">
         {metrics.rateLimitPct.toFixed(0)}%
       </span>
@@ -119,12 +120,13 @@
   .token-dashboard {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
+    overflow: hidden;
   }
   .stats-grid {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
-    gap: 4px;
+    gap: 3px;
   }
   .stat {
     display: flex;
@@ -132,18 +134,25 @@
     align-items: center;
     background: #12122a;
     border: 2px solid var(--border, #3a3a48);
-    padding: 4px;
+    padding: 3px 2px;
+    overflow: hidden;
+    min-width: 0;
   }
   .stat-label {
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-family: monospace;
+    font-size: 8px;
     color: var(--text-secondary, #7a7a88);
-    margin-bottom: 2px;
+    margin-bottom: 1px;
+    white-space: nowrap;
   }
   .stat-value {
-    font-family: var(--font-pixel, monospace);
-    font-size: 9px;
+    font-family: monospace;
+    font-size: 8px;
     color: var(--text-primary, #e6f1ff);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
   .cost {
     color: var(--accent-yellow, #ccaa22);
@@ -156,8 +165,8 @@
   .rate-label {
     display: flex;
     justify-content: space-between;
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-secondary, #7a7a88);
   }
   .rate-bar-bg {
@@ -176,21 +185,21 @@
     gap: 3px;
   }
   .bars-title {
-    font-family: var(--font-pixel, monospace);
-    font-size: 6px;
+    font-family: monospace;
+    font-size: 9px;
     color: var(--text-secondary, #7a7a88);
     margin-bottom: 2px;
   }
   .agent-bar-row {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
   }
   .agent-bar-name {
     font-family: monospace;
-    font-size: 7px;
+    font-size: 8px;
     color: var(--text-primary, #e6f1ff);
-    width: 70px;
+    width: 60px;
     flex-shrink: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -202,6 +211,7 @@
     background: #12122a;
     border: 1px solid #2a2a3a;
     overflow: hidden;
+    min-width: 0;
   }
   .agent-bar-fill {
     height: 100%;
@@ -209,9 +219,9 @@
   }
   .agent-bar-value {
     font-family: monospace;
-    font-size: 7px;
+    font-size: 8px;
     color: var(--text-secondary, #7a7a88);
-    width: 36px;
+    width: 34px;
     text-align: right;
     flex-shrink: 0;
   }

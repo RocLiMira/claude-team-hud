@@ -7,7 +7,7 @@ import type { EnvironmentState, TokenMetrics } from "./metrics";
 import type { CharacterPosition } from "./office";
 import type { AgentState } from "./agents";
 import type { TaskInfo } from "./tasks";
-import { ROLE_MAP } from "../constants/roles";
+import { ROLE_MAP, resolveRole } from "../constants/roles";
 
 type Level5 = 0 | 1 | 2 | 3 | 4 | 5;
 type Level3 = 0 | 1 | 2 | 3;
@@ -215,7 +215,7 @@ export function computePositions(
   const positions: CharacterPosition[] = [];
 
   for (const agent of agents) {
-    const roleConfig = ROLE_MAP.get(agent.role);
+    const roleConfig = resolveRole(agent.role);
     if (!roleConfig) continue;
 
     if (agent.status === "offline") {

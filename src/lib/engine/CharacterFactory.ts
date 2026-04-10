@@ -1,4 +1,4 @@
-import { ROLE_MAP, OFFICE } from "../constants/roles";
+import { OFFICE, resolveRole, markDeskUsed } from "../constants/roles";
 import type { RoleConfig } from "../constants/roles";
 import type { AgentState } from "../state/agents";
 import { Character } from "./Character";
@@ -14,6 +14,9 @@ export class CharacterFactory {
     char.tileY = OFFICE.DOOR_Y;
     char.pixelX = OFFICE.DOOR_X * OFFICE.TILE_SIZE + OFFICE.TILE_SIZE / 2;
     char.pixelY = OFFICE.DOOR_Y * OFFICE.TILE_SIZE + OFFICE.TILE_SIZE / 2;
+    // Sync visual position immediately (don't wait for first update())
+    char.x = char.pixelX;
+    char.y = char.pixelY;
     char.setState("entering");
     return char;
   }
@@ -23,13 +26,14 @@ export class CharacterFactory {
    * Returns null if the role is not recognized.
    */
   static createFromAgent(agent: AgentState): Character | null {
-    const roleConfig = ROLE_MAP.get(agent.role);
+    const roleConfig = resolveRole(agent.role);
     if (!roleConfig) {
       console.warn(
-        `[CharacterFactory] Unknown role "${agent.role}" for agent "${agent.name}"`
+        `[CharacterFactory] No desk available for "${agent.role}" (all 13 desks occupied)`
       );
       return null;
     }
+    markDeskUsed(agent.role);
 
     const char = CharacterFactory.create(roleConfig);
 

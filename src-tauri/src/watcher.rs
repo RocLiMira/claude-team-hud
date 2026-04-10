@@ -280,3 +280,137 @@ impl TeamWatcher {
 
 /// Type alias for the managed watcher state. Used by Tauri commands.
 pub type WatcherState = Arc<Mutex<TeamWatcher>>;
+
+// ---------------------------------------------------------------------------
+// Tmux Pane Monitor — detects permission prompts
+// ---------------------------------------------------------------------------
+
+/// Start a background task that monitors /tmp/claude-hud-permissions/ for hook-based
+/// permission requests. Much more reliable than tmux pane scraping.
+pub fn start_pane_monitor(app_handle: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let perm_dir = std::path::PathBuf::from("/tmp/claude-hud-permissions");
+        let mut seen_requests: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        loop {
+            time::sleep(Duration::from_millis(500)).await;
+
+            if !perm_dir.is_dir() {
+                continue;
+            }
+
+            let entries = match std::fs::read_dir(&perm_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+
+                // Only process request files (not response files)
+                if !name.starts_with("req-") || !name.ends_with(".json") {
+                    continue;
+                }
+
+                // Skip already seen requests
+                if seen_requests.contains(&name) {
+                    continue;
+                }
+
+                let data = match std::fs::read_to_string(&path) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                let request: serde_json::Value = match serde_json::from_str(&data) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                seen_requests.insert(name);
+
+                let req = crate::models::PermissionRequest {
+                    agent_name: request.get("session_id")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    pane_id: request.get("id")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    prompt_text: request.get("description")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("Permission requested")
+                        .to_string(),
+                    timestamp: chrono_now_iso(),
+                };
+
+                if let Err(e) = app_handle.emit("permission-request", &req) {
+                    eprintln!("[perm-monitor] Failed to emit: {}", e);
+                }
+            }
+
+            // Cleanup seen requests that no longer have files
+            seen_requests.retain(|name| perm_dir.join(name).exists());
+        }
+    });
+}
+
+/// Check tmux pane output for Claude Code permission prompt patterns.
+///
+/// Real Claude Code prompts look like:
+/// ```
+/// Claude wants to run: Bash: npm install lodash
+/// [y] Allow once  [Y] Always allow  [n] Deny once  [N] Always deny
+/// ```
+/// Or:
+/// ```
+/// Claude wants to edit file.ts
+/// [y] Allow once  ...
+/// ```
+fn detect_permission_prompt(output: &str) -> Option<String> {
+    let lines: Vec<&str> = output.lines().collect();
+
+    // Scan from bottom up for the most recent prompt
+    for (i, line) in lines.iter().enumerate().rev() {
+        let trimmed = line.trim();
+
+        // Primary pattern: "[y] Allow once" or "[Y] Always allow"
+        let is_choice_line = trimmed.contains("[y]") && trimmed.contains("Allow")
+            || trimmed.contains("[Y]") && trimmed.contains("Always");
+
+        // Secondary pattern: "Allow?" or "(y/n)" for older versions
+        let is_legacy = trimmed.contains("Allow?")
+            || (trimmed.contains("(y/n)") && trimmed.len() < 60);
+
+        if is_choice_line || is_legacy {
+            // Collect context: look above for "Claude wants to..." line
+            let mut context_lines: Vec<&str> = Vec::new();
+            let start = if i >= 5 { i - 5 } else { 0 };
+            for j in start..=i {
+                let l = lines[j].trim();
+                if !l.is_empty() {
+                    context_lines.push(lines[j]);
+                }
+            }
+            return Some(context_lines.join("\n").trim().to_string());
+        }
+    }
+
+    None
+}
+
+/// Simple ISO timestamp for now.
+fn chrono_now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    crate::parser::format_timestamp_iso(millis as u64)
+}
+

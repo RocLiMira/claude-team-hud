@@ -23,6 +23,7 @@ pub struct AgentState {
     pub message_count: u32,
     pub token_usage: u64,
     pub spawn_time: Option<String>,
+    pub pane_id: Option<String>,
 }
 
 /// A message between agents
@@ -57,6 +58,7 @@ pub struct TokenUsage {
     pub burn_rate: f64,
     pub cost_usd: f64,
     pub rate_limit_pct: f64,
+    pub rate_limit_reset: Option<String>,
 }
 
 impl Default for TokenUsage {
@@ -67,8 +69,18 @@ impl Default for TokenUsage {
             burn_rate: 0.0,
             cost_usd: 0.0,
             rate_limit_pct: 0.0,
+            rate_limit_reset: None,
         }
     }
+}
+
+/// Permission request detected from a tmux pane
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRequest {
+    pub agent_name: String,
+    pub pane_id: String,
+    pub prompt_text: String,
+    pub timestamp: String,
 }
 
 /// Complete team snapshot emitted to frontend

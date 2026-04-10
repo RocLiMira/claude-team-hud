@@ -13,6 +13,7 @@ import { metricsStore, environmentStore } from "../state/metrics";
 import { officeStore, meetingActive } from "../state/office";
 import { computeEnvironment, computePositions, isMeetingActive } from "../state/environment";
 import { ROLES } from "../constants/roles";
+import { allTeamsStore } from "../state/multiTeam";
 
 /** Available team names discovered from backend. */
 export const availableTeams = writable<string[]>([]);
@@ -26,6 +27,7 @@ export const bridgeReady = writable<boolean>(false);
 let unlisten: (() => void) | null = null;
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let mockInterval: ReturnType<typeof setInterval> | null = null;
+let teamDiscoveryInterval: ReturnType<typeof setInterval> | null = null;
 
 // --- Tauri context detection -------------------------------------------------
 
@@ -49,6 +51,7 @@ function mapAgent(raw: RawAgentState): AgentState {
     messageCount: raw.message_count,
     tokenUsage: raw.token_usage,
     spawnTime: raw.spawn_time,
+    paneId: raw.pane_id,
   };
 }
 
@@ -97,6 +100,7 @@ function applySnapshot(snapshot: TeamSnapshot): void {
     burnRate: snapshot.token_usage.burn_rate,
     costUsd: snapshot.token_usage.cost_usd,
     rateLimitPct: snapshot.token_usage.rate_limit_pct,
+    rateLimitReset: snapshot.token_usage.rate_limit_reset ?? null,
   });
 
   const currentMetrics = get(metricsStore);
@@ -114,15 +118,77 @@ async function initTauri(): Promise<void> {
   const teams: string[] = await invoke("list_teams");
   availableTeams.set(teams);
 
-  if (teams.length === 0) {
-    console.log("[bridge] No teams found");
-    bridgeReady.set(true);
-    return;
+  if (teams.length > 0) {
+    // Auto-select first team
+    await switchTeamTauri(teams[0]);
+  } else {
+    console.log("[bridge] No teams found, will keep polling...");
   }
 
-  // Auto-select first team
-  await switchTeamTauri(teams[0]);
   bridgeReady.set(true);
+
+  // Poll for new/removed teams every 3 seconds
+  startTeamDiscovery(invoke);
+}
+
+function startTeamDiscovery(invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>): void {
+  if (teamDiscoveryInterval) return;
+
+  // Poll all teams' snapshots for building view
+  const pollAllTeams = async (teams: string[]) => {
+    const snapshots = new Map<string, TeamSnapshot>();
+    for (const team of teams) {
+      try {
+        const snapshot = (await invoke("get_team_snapshot", { team })) as unknown as TeamSnapshot;
+        snapshots.set(team, snapshot);
+      } catch { /* skip unavailable teams */ }
+    }
+    allTeamsStore.set(snapshots);
+  };
+
+  teamDiscoveryInterval = setInterval(async () => {
+    try {
+      const teams = (await invoke("list_teams")) as string[];
+      const current = get(availableTeams);
+      const currentActive = get(activeTeam);
+
+      // Always poll all teams for building view
+      pollAllTeams(teams);
+
+      // Detect changes
+      const added = teams.filter((t) => !current.includes(t));
+      const removed = current.filter((t) => !teams.includes(t));
+
+      if (added.length === 0 && removed.length === 0) return;
+
+      console.log("[bridge] Team change detected:", { added, removed });
+      availableTeams.set(teams);
+
+      // If active team was removed, clear all stores first, then switch
+      if (currentActive && removed.includes(currentActive)) {
+        // Force clear all stores so scene removes all characters immediately
+        agentsStore.set([]);
+        tasksStore.set([]);
+        messagesStore.set([]);
+        teamStore.set({ name: "", memberCount: 0, activeSince: "" });
+        officeStore.set([]);
+        meetingActive.set(false);
+
+        if (teams.length > 0) {
+          await switchTeamTauri(teams[0]);
+        } else {
+          activeTeam.set(null);
+        }
+      }
+
+      // If no active team but teams now available, auto-select
+      if (!currentActive && teams.length > 0) {
+        await switchTeamTauri(teams[0]);
+      }
+    } catch (err) {
+      console.warn("[bridge] Team discovery poll failed:", err);
+    }
+  }, 3000);
 }
 
 async function switchTeamTauri(teamName: string): Promise<void> {
@@ -147,7 +213,10 @@ async function switchTeamTauri(teamName: string): Promise<void> {
     await invoke("watch_team", { team: teamName });
     const { listen } = await import("@tauri-apps/api/event");
     unlisten = await listen<TeamSnapshot>("team-update", (event) => {
-      applySnapshot(event.payload);
+      // Only apply snapshots for the currently active team
+      if (event.payload.team_name === get(activeTeam)) {
+        applySnapshot(event.payload);
+      }
     });
     eventDriven = true;
     console.log("[bridge] Event-driven mode active for team:", teamName);
@@ -158,11 +227,15 @@ async function switchTeamTauri(teamName: string): Promise<void> {
   // If event-driven failed, poll get_team_snapshot every 2 seconds
   if (!eventDriven) {
     const poll = async () => {
+      // Only apply if this team is still the active one
+      if (get(activeTeam) !== teamName) return;
       try {
         const snapshot: TeamSnapshot = await invoke("get_team_snapshot", {
           team: teamName,
         });
-        applySnapshot(snapshot);
+        if (get(activeTeam) === teamName) {
+          applySnapshot(snapshot);
+        }
       } catch (err) {
         console.warn("[bridge] Poll failed:", err);
       }
@@ -248,6 +321,7 @@ function buildMockSnapshot(cycleCount: number): TeamSnapshot {
         message_count: cycleCount * 2 + idx,
         token_usage: baseTokens + tokenGrowth,
         spawn_time: spawnTime,
+        pane_id: null,
       };
     }
   );
@@ -317,6 +391,7 @@ function buildMockSnapshot(cycleCount: number): TeamSnapshot {
       burn_rate: 50 + cycleCount * 25,
       cost_usd: totalTokens * 0.000015,
       rate_limit_pct: Math.min(95, 10 + cycleCount * 5),
+      rate_limit_reset: "2h 30m",
     },
     session_start: sessionStart,
   };
@@ -389,6 +464,16 @@ export async function switchTeam(teamName: string): Promise<void> {
   }
 }
 
+/** Clear all team-specific stores. Used when switching floors. */
+export function clearStores(): void {
+  agentsStore.set([]);
+  tasksStore.set([]);
+  messagesStore.set([]);
+  teamStore.set({ name: "", memberCount: 0, activeSince: "" });
+  officeStore.set([]);
+  meetingActive.set(false);
+}
+
 export function destroyBridge(): void {
   if (unlisten) {
     unlisten();
@@ -401,6 +486,10 @@ export function destroyBridge(): void {
   if (mockInterval) {
     clearInterval(mockInterval);
     mockInterval = null;
+  }
+  if (teamDiscoveryInterval) {
+    clearInterval(teamDiscoveryInterval);
+    teamDiscoveryInterval = null;
   }
   console.log("[bridge] IPC bridge destroyed");
 }
